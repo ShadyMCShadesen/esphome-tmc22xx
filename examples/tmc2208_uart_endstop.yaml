@@ -23,7 +23,7 @@ external_components:
       type: local
       path: ../components
   # ... or straight from a Git repository:
-  # - source: github://<your-user>/esphome-tmc22xx@main
+  # - source: github://ShadyMCShadesen/esphome-tmc22xx@main
   #   components: [tmc22xx]
 
 # Single-wire UART: GPIO17 (TX) --[1 kOhm]--+-- PDN_UART,  GPIO16 (RX) ---+

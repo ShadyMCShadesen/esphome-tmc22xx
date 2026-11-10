@@ -36,7 +36,7 @@ external_components:
       type: local
       path: components            # Pfad relativ zur YAML
   # oder:
-  # - source: github://<user>/esphome-tmc22xx@main
+  # - source: github://ShadyMCShadesen/esphome-tmc22xx@main
   #   components: [tmc22xx]
 ```
 

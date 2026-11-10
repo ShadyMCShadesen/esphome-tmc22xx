@@ -21,7 +21,7 @@ external_components:
   - source:
       type: local
       path: ../components
-  # - source: github://<your-user>/esphome-tmc22xx@main
+  # - source: github://ShadyMCShadesen/esphome-tmc22xx@main
   #   components: [tmc22xx]
 
 tmc22xx:
