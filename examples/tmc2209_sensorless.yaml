@@ -1,0 +1,104 @@
+# Two TMC2209 on one UART bus (addresses 0 and 1), sensorless homing via StallGuard4 / DIAG.
+esphome:
+  name: tmc2209-sensorless
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+api:
+ota:
+  - platform: esphome
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+uart:
+  id: tmc_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 115200
+
+tmc22xx:
+  - id: axis_x
+    driver: tmc2209
+    mode: uart
+    uart_id: tmc_uart
+    address: 0                  # MS1 = GND, MS2 = GND
+    step_pin: GPIO25
+    dir_pin: GPIO26
+    enable_pin:
+      number: GPIO27
+      inverted: true
+    diag_pin: GPIO34
+    rsense: 110mOhm
+    run_current: 900mA
+    hold_current: 400mA
+    microsteps: 16
+    chopper: stealthchop        # StallGuard4 requires StealthChop
+    stallguard_threshold: 70    # SGTHRS: stall when SG_RESULT <= 2 * SGTHRS
+    stop_on_stall: true         # also guard normal moves
+    max_speed: 4000             # steps/s
+    acceleration: 8000
+    homing:
+      source: stallguard
+      direction: negative
+      speed: 1600               # needs a medium speed, StallGuard does not work when creeping
+      backoff: 400
+      max_travel: 80000
+      timeout: 60s
+      on_boot: true
+    on_stall:
+      - logger.log:
+          level: WARN
+          format: "X axis stalled"
+    on_homing_failed:
+      - tmc22xx.disable: axis_x
+
+  - id: axis_y
+    driver: tmc2209
+    mode: uart
+    uart_id: tmc_uart
+    address: 1                  # MS1 = VIO, MS2 = GND
+    step_pin: GPIO32
+    dir_pin: GPIO33
+    run_current: 600mA
+    max_speed: 2000
+    acceleration: 4000
+
+sensor:
+  - platform: tmc22xx
+    tmc22xx_id: axis_x
+    position:
+      name: "X position"
+    stallguard_result:
+      name: "X StallGuard result"   # use it to tune stallguard_threshold
+
+binary_sensor:
+  - platform: tmc22xx
+    tmc22xx_id: axis_x
+    stall:
+      name: "X stall"
+    homed:
+      name: "X homed"
+
+button:
+  - platform: tmc22xx
+    tmc22xx_id: axis_x
+    home:
+      name: "X home"
+  - platform: template
+    name: "X tune StallGuard"
+    on_press:
+      - tmc22xx.set_stallguard_threshold:
+          id: axis_x
+          threshold: 60

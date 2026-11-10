@@ -1,0 +1,178 @@
+# TMC2208 in UART mode, homing with an end stop (roller blind / linear axis).
+esphome:
+  name: tmc2208-uart
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+api:
+ota:
+  - platform: esphome
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  # local checkout ...
+  - source:
+      type: local
+      path: ../components
+  # ... or straight from a Git repository:
+  # - source: github://<your-user>/esphome-tmc22xx@main
+  #   components: [tmc22xx]
+
+# Single-wire UART: GPIO17 (TX) --[1 kOhm]--+-- PDN_UART,  GPIO16 (RX) ---+
+uart:
+  id: tmc_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 115200
+
+tmc22xx:
+  - id: motor
+    driver: tmc2208
+    mode: uart
+    uart_id: tmc_uart
+    step_pin: GPIO25
+    dir_pin: GPIO26
+    enable_pin:
+      number: GPIO27
+      inverted: true            # EN is active low on the driver
+    rsense: 110mOhm             # BigTreeTech / FYSETC / Watterott modules
+    run_current: 800mA          # RMS
+    hold_current: 300mA
+    standstill_delay: 2s        # TPOWERDOWN: time until the current drops to hold_current
+    microsteps: 16
+    interpolation: true
+    chopper: stealthchop
+    stealthchop_threshold: 40   # units/s; SpreadCycle above this speed (optional)
+    invert_direction: false
+    steps_per_unit: 80.0        # 200 steps * 16 microsteps / 40 mm per revolution -> unit = mm
+    max_speed: 60               # mm/s
+    acceleration: 300           # mm/s^2
+    deceleration: 300
+    min_position: 0
+    max_position: 1500
+    idle_disable_delay: 5min    # switch the power stage off when idle (omit to keep holding)
+    poll_interval: 2s
+    homing:
+      source: endstop
+      endstop_pin:
+        number: GPIO32
+        inverted: true          # NO switch to GND; use `inverted: false` for NC
+        mode:
+          input: true
+          pullup: true
+      direction: negative
+      speed: 20                 # mm/s
+      slow_speed: 3             # second, slow approach
+      backoff: 5                # mm
+      max_travel: 1600          # mm
+      timeout: 120s
+      debounce: 1ms
+      home_position: 0          # position value at the switch point
+      park_position: 2          # optional: go there after homing
+      on_boot: false
+    on_move_complete:
+      - logger.log: "Move complete"
+    on_homing_complete:
+      - logger.log: "Homing complete"
+    on_homing_failed:
+      - logger.log:
+          level: ERROR
+          format: "Homing failed"
+    on_driver_error:
+      - logger.log:
+          level: ERROR
+          format: "Driver error flags: 0x%08X"
+          args: ["(unsigned) x"]
+      - tmc22xx.disable: motor
+
+sensor:
+  - platform: tmc22xx
+    tmc22xx_id: motor
+    position:
+      name: "Position"
+      unit_of_measurement: "mm"
+      accuracy_decimals: 1
+    actual_current:
+      name: "Motor current"
+
+binary_sensor:
+  - platform: tmc22xx
+    tmc22xx_id: motor
+    moving:
+      name: "Moving"
+    homed:
+      name: "Homed"
+    homing:
+      name: "Homing"
+    driver_error:
+      name: "Driver error"
+    overtemperature_warning:
+      name: "Driver overtemperature"
+
+text_sensor:
+  - platform: tmc22xx
+    tmc22xx_id: motor
+    driver_status:
+      name: "Driver status"
+
+number:
+  - platform: tmc22xx
+    tmc22xx_id: motor
+    name: "Target"
+    unit_of_measurement: "mm"
+    min_value: 0
+    max_value: 1500
+    step: 1
+
+button:
+  - platform: tmc22xx
+    tmc22xx_id: motor
+    home:
+      name: "Home"
+    stop:
+      name: "Stop"
+    emergency_stop:
+      name: "Emergency stop"
+  - platform: template
+    name: "Open"
+    on_press:
+      - tmc22xx.move_to:
+          id: motor
+          position: 0
+  - platform: template
+    name: "Half"
+    on_press:
+      - if:
+          condition:
+            tmc22xx.is_homed: motor
+          then:
+            - tmc22xx.move_to:
+                id: motor
+                position: !lambda "return 1500.0f / 2;"
+          else:
+            - tmc22xx.home: motor
+  - platform: template
+    name: "Jog +10"
+    on_press:
+      - tmc22xx.move_by:
+          id: motor
+          distance: 10
+  - platform: template
+    name: "Quiet mode"
+    on_press:
+      - tmc22xx.set_current:
+          id: motor
+          run_current: 500mA
+          hold_current: 200mA
+      - tmc22xx.set_speed:
+          id: motor
+          max_speed: 30
+          acceleration: 150

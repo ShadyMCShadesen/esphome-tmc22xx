@@ -1,0 +1,77 @@
+# TMC2208 in stand-alone mode: STEP/DIR/EN only (+ optional MS1/MS2), no UART.
+# Motor current is set with the Vref potentiometer of the module.
+esphome:
+  name: tmc2208-pins
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+ota:
+  - platform: esphome
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+  # - source: github://<your-user>/esphome-tmc22xx@main
+  #   components: [tmc22xx]
+
+tmc22xx:
+  - id: feeder
+    driver: tmc2208
+    mode: pins
+    step_pin: GPIO25
+    dir_pin: GPIO26
+    enable_pin:
+      number: GPIO27
+      inverted: true
+    ms1_pin: GPIO14             # optional; omit both if the jumpers are hard wired
+    ms2_pin: GPIO13
+    microsteps: 16              # TMC2208 via pins: 2, 4, 8 or 16
+    invert_direction: true      # done on the DIR pin in this mode
+    steps_per_unit: 8.8889      # 200 * 16 / 360 -> unit = degree
+    max_speed: 360              # deg/s
+    acceleration: 720           # deg/s^2
+    idle_disable_delay: 10s
+    on_move_complete:
+      - logger.log: "Portion dispensed"
+
+sensor:
+  - platform: tmc22xx
+    tmc22xx_id: feeder
+    position:
+      name: "Feeder angle"
+      unit_of_measurement: "°"
+
+binary_sensor:
+  - platform: tmc22xx
+    tmc22xx_id: feeder
+    moving:
+      name: "Feeder running"
+
+button:
+  - platform: tmc22xx
+    tmc22xx_id: feeder
+    stop:
+      name: "Feeder stop"
+  - platform: template
+    name: "Dispense portion"
+    on_press:
+      - tmc22xx.move_by:
+          id: feeder
+          distance: 90
+  - platform: template
+    name: "Run continuously"
+    on_press:
+      - tmc22xx.run:
+          id: feeder
+          direction: forward
+          speed: 180
