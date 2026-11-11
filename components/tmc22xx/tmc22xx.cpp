@@ -589,20 +589,33 @@ void TMC22XX::check_wiring_() {
   }
   if (this->motion_->is_running())
     return;
+  // On a re-check only the lines that failed before are toggled again.
+  const bool first = !this->wiring_checked_;
   uint32_t high = 0, low = 0;
-  this->dir_pin_->digital_write(true);
-  bool ok = this->uart_.read(REG_IOIN, &high);
-  this->dir_pin_->digital_write(false);
-  ok = ok && this->uart_.read(REG_IOIN, &low);
-  const bool dir_ok = ((high ^ low) & IOIN_DIR) != 0;
-  this->step_pin_->digital_write(true);
-  ok = ok && this->uart_.read(REG_IOIN, &high);
-  this->step_pin_->digital_write(false);
-  ok = ok && this->uart_.read(REG_IOIN, &low);
-  const bool step_ok = ((high ^ low) & IOIN_STEP) != 0;
+  bool ok = true;
+  bool dir_ok = true, step_ok = true;
+  if (first || (this->wiring_errors_ & ERR_DIR_WIRING)) {
+    this->dir_pin_->digital_write(true);
+    ok = this->uart_.read(REG_IOIN, &high);
+    this->dir_pin_->digital_write(false);
+    ok = ok && this->uart_.read(REG_IOIN, &low);
+    dir_ok = ((high ^ low) & IOIN_DIR) != 0;
+  }
+  if (first || (this->wiring_errors_ & ERR_STEP_WIRING)) {
+    this->step_pin_->digital_write(true);
+    ok = ok && this->uart_.read(REG_IOIN, &high);
+    this->step_pin_->digital_write(false);
+    ok = ok && this->uart_.read(REG_IOIN, &low);
+    step_ok = ((high ^ low) & IOIN_STEP) != 0;
+  }
   if (!ok)
-    return;  // retried with the next configuration attempt
+    return;  // retried with the next configuration attempt / poll
   this->wiring_checked_ = true;
+  const uint32_t errors = (step_ok ? 0 : ERR_STEP_WIRING) | (dir_ok ? 0 : ERR_DIR_WIRING);
+  const bool changed = first || errors != this->wiring_errors_;
+  this->wiring_errors_ = errors;
+  if (!changed)
+    return;
 
   if (step_ok && dir_ok) {
     ESP_LOGI(TAG, "Wiring check: STEP and DIR reach the driver");
@@ -679,7 +692,10 @@ void TMC22XX::poll_driver_() {
     this->comm_failed_();
     return;
   }
-  uint32_t errors = drv & DRV_ERROR_MASK;
+  // A failed wiring check stays visible as an error and is repeated until the lines are fixed.
+  if (this->wiring_errors_ != 0)
+    this->check_wiring_();
+  uint32_t errors = (drv & DRV_ERROR_MASK) | this->wiring_errors_;
   if (gstat & GSTAT_UV_CP)
     errors |= ERR_UV_CP;
   this->update_status_(errors, drv);
@@ -715,7 +731,7 @@ void TMC22XX::update_status_(uint32_t errors, uint32_t drv_status) {
     uint32_t mask;
     const char *name;
   } FLAGS[] = {
-      {ERR_COMM, "no_uart"}, {DRV_OT, "ot"},       {DRV_OTPW, "otpw"},   {DRV_S2GA, "s2ga"}, {DRV_S2GB, "s2gb"},
+      {ERR_COMM, "no_uart"}, {ERR_STEP_WIRING, "step_nc"}, {ERR_DIR_WIRING, "dir_nc"}, {DRV_OT, "ot"},       {DRV_OTPW, "otpw"},   {DRV_S2GA, "s2ga"}, {DRV_S2GB, "s2gb"},
       {DRV_S2VSA, "s2vsa"},  {DRV_S2VSB, "s2vsb"}, {ERR_UV_CP, "uv_cp"}, {DRV_OLA, "ola"},   {DRV_OLB, "olb"},
   };
   char text[64];

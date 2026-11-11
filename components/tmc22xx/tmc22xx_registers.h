@@ -98,6 +98,8 @@ static const uint32_t DRV_ERROR_MASK = DRV_OT | DRV_S2GA | DRV_S2GB | DRV_S2VSA 
 // Bits 0..11 mirror DRV_STATUS, the bits below are synthesized by the component.
 static const uint32_t ERR_UV_CP = 1UL << 24;  // GSTAT.uv_cp, charge pump undervoltage
 static const uint32_t ERR_COMM = 1UL << 25;   // driver does not answer on UART
+static const uint32_t ERR_STEP_WIRING = 1UL << 26;  // driver does not see the STEP pin toggling
+static const uint32_t ERR_DIR_WIRING = 1UL << 27;   // driver does not see the DIR pin toggling
 
 // Nominal internal clock, used for TSTEP based thresholds.
 static const uint32_t TMC_FCLK_HZ = 12000000UL;

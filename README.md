@@ -128,7 +128,8 @@ und `index_pin`; `step_pin`/`dir_pin` entfallen. Beispiel: `examples/tmc2209_uar
 
 Conditions: `tmc22xx.is_moving`, `tmc22xx.is_homed`, `tmc22xx.is_homing`.
 Trigger: `on_move_complete`, `on_homing_complete`, `on_homing_failed`, `on_stall` (TMC2209),
-`on_driver_error` (`x` = Fehlerbits: Bit 1 ot, 2/3 s2ga/s2gb, 4/5 s2vsa/s2vsb, 24 uv_cp, 25 UART-Ausfall).
+`on_driver_error` (`x` = Fehlerbits: Bit 1 ot, 2/3 s2ga/s2gb, 4/5 s2vsa/s2vsb, 24 uv_cp, 25 UART-Ausfall,
+26 STEP kommt nicht am Treiber an, 27 DIR kommt nicht an). Im Text-Sensor: `step_nc`, `dir_nc`.
 In Lambdas: `id(motor).get_position()`, `get_target()`, `is_moving()`, `get_driver_errors()`.
 
 `set_speed` und `run: speed:` ändern die Maximalgeschwindigkeit dauerhaft. `set_microsteps` skaliert

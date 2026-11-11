@@ -275,6 +275,7 @@ class TMC22XX : public Component {
   bool spreadcycle_{false};
   bool driver_configured_{false};
   bool wiring_checked_{false};
+  uint32_t wiring_errors_{0};
 #endif
 #ifdef USE_TMC22XX_STALLGUARD
   InternalGPIOPin *diag_pin_{nullptr};
