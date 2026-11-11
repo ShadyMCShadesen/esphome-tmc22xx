@@ -713,6 +713,11 @@ automation.register_apply_action(
     automation.ApplyField(CONF_MICROSTEPS, "set_microsteps", cg.uint16),
 )
 automation.register_apply_action(
+    "tmc22xx.spin_test",
+    _ID_SCHEMA.extend({cv.Required(CONF_SPEED): cv.templatable(cv.float_)}),
+    automation.ApplyField(CONF_SPEED, "spin_test", cg.float_),
+)
+automation.register_apply_action(
     "tmc22xx.set_stallguard_threshold",
     _ID_SCHEMA.extend(
         {cv.Required(CONF_THRESHOLD): cv.templatable(cv.int_range(min=0, max=255))}

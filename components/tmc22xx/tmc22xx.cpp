@@ -538,9 +538,74 @@ bool TMC22XX::configure_driver_() {
 #endif
   ok = ok && this->write_(REG_GSTAT, GSTAT_RESET | GSTAT_DRV_ERR | GSTAT_UV_CP);  // write 1 to clear
   this->driver_configured_ = ok;
-  if (ok)
+  if (ok) {
     ESP_LOGI(TAG, "Driver configured (IRUN=%u, IHOLD=%u, vsense=%u)", this->irun_, this->ihold_, this->vsense_);
+    if (!this->wiring_checked_)
+      this->check_wiring_();
+  }
   return ok;
+}
+
+void TMC22XX::check_wiring_() {
+  // IOIN mirrors the levels the driver sees on its pins, so the STEP/DIR/EN wiring can be verified
+  // without moving the motor (the single STEP edge used here is one microstep).
+  if (this->gen_.is_running())
+    return;
+  uint32_t high = 0, low = 0;
+  this->dir_pin_->digital_write(true);
+  bool ok = this->uart_.read(REG_IOIN, &high);
+  this->dir_pin_->digital_write(false);
+  ok = ok && this->uart_.read(REG_IOIN, &low);
+  const bool dir_ok = ((high ^ low) & IOIN_DIR) != 0;
+  this->step_pin_->digital_write(true);
+  ok = ok && this->uart_.read(REG_IOIN, &high);
+  this->step_pin_->digital_write(false);
+  ok = ok && this->uart_.read(REG_IOIN, &low);
+  const bool step_ok = ((high ^ low) & IOIN_STEP) != 0;
+  if (!ok)
+    return;  // retried with the next configuration attempt
+  this->wiring_checked_ = true;
+
+  if (step_ok && dir_ok) {
+    ESP_LOGI(TAG, "Wiring check: STEP and DIR reach the driver");
+  } else {
+    if (!step_ok)
+      ESP_LOGE(TAG, "Wiring check: the driver does not see the STEP pin toggling - check the STEP wire / GPIO");
+    if (!dir_ok)
+      ESP_LOGE(TAG, "Wiring check: the driver does not see the DIR pin toggling - check the DIR wire / GPIO");
+  }
+  if (low & IOIN_ENN)
+    ESP_LOGW(TAG, "Wiring check: ENN is high at the driver, the power stage is disabled by the pin");
+  uint32_t drv = 0;
+  if (this->uart_.read(REG_DRV_STATUS, &drv)) {
+    ESP_LOGD(TAG, "DRV_STATUS=0x%08" PRIX32 " (CS_ACTUAL=%u, stealth=%u, stst=%u)", drv,
+             static_cast<unsigned>((drv >> DRV_CS_ACTUAL_SHIFT) & 0x1F), (drv & DRV_STEALTH) ? 1 : 0,
+             (drv & DRV_STST) ? 1 : 0);
+  }
+}
+
+void TMC22XX::spin_test(float speed) {
+  if (!this->ready_ || !this->uart_mode_ || !this->driver_configured_) {
+    ESP_LOGW(TAG, "spin_test requires a configured driver in mode: uart");
+    return;
+  }
+  if (this->is_moving()) {
+    ESP_LOGW(TAG, "spin_test ignored: motor is moving");
+    return;
+  }
+  if (!this->enabled_)
+    this->enable();
+  // VACTUAL lets the driver generate the steps itself: v [usteps/s] = VACTUAL * f_CLK / 2^24.
+  // The STEP input is ignored while VACTUAL != 0 and the position counter is not updated.
+  const float usteps = speed * this->steps_per_unit_;
+  const int32_t vactual = static_cast<int32_t>(lroundf(usteps * 16777216.0f / static_cast<float>(TMC_FCLK_HZ)));
+  ESP_LOGI(TAG, "Spin test: driver-generated motion at %.0f steps/s for 2 s (VACTUAL=%" PRId32 ")", usteps, vactual);
+  if (!this->write_(REG_VACTUAL, static_cast<uint32_t>(vactual) & 0x00FFFFFFUL))
+    return;
+  this->set_timeout("spin_test", 2000, [this]() {
+    this->write_(REG_VACTUAL, 0);
+    ESP_LOGI(TAG, "Spin test finished");
+  });
 }
 
 void TMC22XX::comm_failed_() {
@@ -684,6 +749,7 @@ void TMC22XX::set_stealthchop_threshold(float speed) {
 void TMC22XX::set_run_current(float milliamps) { ESP_LOGW(TAG, "set_current requires mode: uart"); }
 void TMC22XX::set_hold_current(float milliamps) { ESP_LOGW(TAG, "set_current requires mode: uart"); }
 void TMC22XX::set_stealthchop_threshold(float speed) {}
+void TMC22XX::spin_test(float speed) { ESP_LOGW(TAG, "spin_test requires mode: uart"); }
 
 #endif  // USE_TMC22XX_UART
 

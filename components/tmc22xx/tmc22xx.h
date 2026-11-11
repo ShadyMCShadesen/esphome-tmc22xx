@@ -115,6 +115,8 @@ class TMC22XX : public Component {
   /// StealthChop below, SpreadCycle above this speed (units/s). 0 disables the switch-over.
   void set_stealthchop_threshold(float speed);
   void set_stallguard_threshold(uint8_t threshold);
+  /// Diagnostics: let the driver turn the motor by itself (VACTUAL) for 2 s, independent of STEP/DIR.
+  void spin_test(float speed);
 
   // ---- motion API ----
   void move_to(float position);
@@ -181,6 +183,7 @@ class TMC22XX : public Component {
 
 #ifdef USE_TMC22XX_UART
   bool configure_driver_();
+  void check_wiring_();
   void poll_driver_();
   void comm_failed_();
   void update_status_(uint32_t errors, uint32_t drv_status);
@@ -253,6 +256,7 @@ class TMC22XX : public Component {
   bool vsense_{false};
   bool spreadcycle_{false};
   bool driver_configured_{false};
+  bool wiring_checked_{false};
 #endif
 #ifdef USE_TMC22XX_STALLGUARD
   InternalGPIOPin *diag_pin_{nullptr};
