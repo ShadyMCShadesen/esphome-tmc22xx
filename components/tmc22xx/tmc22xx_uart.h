@@ -24,6 +24,9 @@ class TMCUart {
   bool read(uint8_t reg, uint32_t *value);
   /// Write a register and verify via IFCNT that the driver accepted it. Retries on failure.
   bool write(uint8_t reg, uint32_t value);
+  /// Send a write datagram without reading IFCNT back (about 1 ms instead of 3 ms).
+  /// Only for values that are refreshed continuously, e.g. VACTUAL during a ramp.
+  void write_unverified(uint8_t reg, uint32_t value);
 
   UartError last_error() const { return this->last_error_; }
   uint16_t crc_error_count() const { return this->crc_errors_; }

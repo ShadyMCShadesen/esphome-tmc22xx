@@ -105,6 +105,20 @@ bool TMCUart::read(uint8_t reg, uint32_t *value) {
   return false;
 }
 
+void TMCUart::write_unverified(uint8_t reg, uint32_t value) {
+  uint8_t datagram[8] = {TMC_SYNC,
+                         this->address_,
+                         static_cast<uint8_t>(reg | TMC_WRITE_FLAG),
+                         static_cast<uint8_t>(value >> 24),
+                         static_cast<uint8_t>(value >> 16),
+                         static_cast<uint8_t>(value >> 8),
+                         static_cast<uint8_t>(value),
+                         0};
+  datagram[7] = crc8(datagram, 7);
+  this->send_(datagram, sizeof(datagram));
+  this->ifcnt_valid_ = false;  // the driver's counter moved on without us checking it
+}
+
 bool TMCUart::write(uint8_t reg, uint32_t value) {
   uint8_t datagram[8] = {TMC_SYNC,
                          this->address_,

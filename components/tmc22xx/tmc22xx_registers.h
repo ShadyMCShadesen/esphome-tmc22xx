@@ -37,6 +37,7 @@ static const uint32_t GCONF_I_SCALE_ANALOG = 1UL << 0;    // 1: VREF pin scales 
 static const uint32_t GCONF_INTERNAL_RSENSE = 1UL << 1;   // keep 0 with external sense resistors
 static const uint32_t GCONF_EN_SPREADCYCLE = 1UL << 2;    // 0: StealthChop, 1: SpreadCycle
 static const uint32_t GCONF_SHAFT = 1UL << 3;             // inverse motor direction
+static const uint32_t GCONF_INDEX_STEP = 1UL << 5;        // INDEX toggles with every internal step
 static const uint32_t GCONF_PDN_DISABLE = 1UL << 6;       // 1: PDN_UART pin is UART only
 static const uint32_t GCONF_MSTEP_REG_SELECT = 1UL << 7;  // 1: microsteps from MRES, not MS1/MS2
 static const uint32_t GCONF_MULTISTEP_FILT = 1UL << 8;    // step pulse filtering

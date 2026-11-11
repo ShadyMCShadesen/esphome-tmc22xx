@@ -21,11 +21,14 @@ components/tmc22xx/
   tmc22xx.h/.cpp         Komponente: Treiberkonfiguration, Homing, Diagnose, Entities
   tmc22xx_stepgen.h/.cpp GPTimer-ISR, Positionszähler, Trigger-Eingang (Endschalter/DIAG)
   tmc22xx_ramp.h         Integer-Rampenplaner (plattformunabhängig, host-testbar)
+  tmc22xx_motion.h       gemeinsame Schnittstelle der beiden Bewegungsarten
+  tmc22xx_vactual.h/.cpp Bewegung über UART (VACTUAL) mit Schrittzählung am INDEX-Pin
   tmc22xx_uart.h/.cpp    UART-Datagramme, CRC8, Echo-Behandlung, IFCNT-Prüfung, Retries
   tmc22xx_registers.h    Registeradressen und Bitmasken
   tmc22xx_button.h, tmc22xx_number.h
 examples/                drei vollständige YAMLs
 tests/test_ramp.cpp      Host-Test für Rampenplaner und CRC
+tests/test_uart_motion.cpp  Host-Simulation der UART-Bewegung gegen ein Treibermodell
 ```
 
 ## Einbindung
@@ -49,7 +52,9 @@ Ohne `steps_per_unit` ist eine Einheit ein (Mikro-)Schritt; mit `steps_per_unit:
 |---|---|---|---|
 | `driver` | beide | `tmc2208` | `tmc2208` oder `tmc2209` |
 | `mode` | beide | `uart` | `uart` oder `pins` |
-| `step_pin`, `dir_pin` | beide | Pflicht | interne GPIOs |
+| `control` | beide | `step_dir` | `step_dir` oder `uart` (Bewegung ohne STEP/DIR, siehe unten) |
+| `step_pin`, `dir_pin` | beide | Pflicht bei `step_dir` | interne GPIOs |
+| `index_pin`, `creep_speed` | uart | – / 100 Schritte/s | nur bei `control: uart` |
 | `enable_pin` | beide | – | EN ist low-aktiv: `inverted: true` setzen |
 | `ms1_pin`, `ms2_pin`, `microsteps` | pins | – | TMC2208: 2/4/8/16, TMC2209: 8/16/32/64 |
 | `max_speed` | beide | Pflicht | Einheiten/s (max. 100 000 Schritte/s) |
@@ -81,6 +86,27 @@ Ablauf: schnelle Suche → (bei `slow_speed`: Freifahren um `backoff`, langsame 
 Schritts nach Ablauf der Entprellzeit. Fehler (Timeout, kein Trigger innerhalb `max_travel`, Schalter
 nach dem Freifahren noch aktiv, Treiber nicht erreichbar) lösen `on_homing_failed` aus.
 
+### Bewegung über UART (`control: uart`)
+
+Ohne STEP/DIR: Die Komponente gibt dem Treiber über das Register VACTUAL eine Geschwindigkeit vor
+und zählt jeden erzeugten Mikroschritt am INDEX-Pin (`GCONF.index_step`). Nötig sind `mode: uart`
+und `index_pin`; `step_pin`/`dir_pin` entfallen. Beispiel: `examples/tmc2209_uart_control.yaml`.
+
+- Die Rampe entsteht aus Geschwindigkeitsvorgaben alle 5 ms. Die Bremskurve richtet sich nach der
+  gezählten Position, die Toleranz des Treibertakts beeinflusst das Ziel also nicht.
+- Das Ziel wird mit `creep_speed` angefahren. Läuft der Motor wegen der Befehlslaufzeit darüber
+  hinaus, korrigiert die Komponente mit bis zu drei kurzen Kriechfahrten. Die Endposition stimmt
+  dann, der Weg dorthin kann aber einige Schritte überschwingen, vor allem wenn die Hauptschleife
+  blockiert ist (Display, WLAN). Für Anwendungen, die kein Überschwingen vertragen, STEP/DIR nehmen.
+- Beim Homing hält der Motor einige Schritte hinter dem Schaltpunkt; die Überfahrt wird gezählt und
+  in der Referenzposition berücksichtigt.
+- Bleiben während der Fahrt die INDEX-Pulse aus, bricht die Komponente mit Fehlermeldung ab.
+- Antwortet der Treiber nicht auf den Stopp-Befehl, dreht der Motor weiter, bis der Befehl ankommt;
+  die Komponente wiederholt ihn laufend und schaltet, falls konfiguriert, über `enable_pin` ab.
+  Ein `enable_pin` ist in diesem Modus deshalb empfohlen.
+- Schritte, die während Flash-Schreibzugriffen (OTA, Einstellungen speichern) eintreffen, können
+  beim Zählen verloren gehen.
+
 ### Actions, Conditions, Trigger
 
 | Action | Parameter (alle templatable) |
@@ -94,6 +120,7 @@ nach dem Freifahren noch aktiv, Treiber nicht erreichbar) lösen `on_homing_fail
 | `tmc22xx.set_current` | `run_current`, `hold_current` (Lambda liefert mA) |
 | `tmc22xx.set_microsteps` | `microsteps` |
 | `tmc22xx.set_stallguard_threshold` | `threshold` (TMC2209) |
+| `tmc22xx.spin_test` | `speed`: Diagnose, der Treiber dreht den Motor 2 s selbst (VACTUAL) |
 
 Conditions: `tmc22xx.is_moving`, `tmc22xx.is_homed`, `tmc22xx.is_homing`.
 Trigger: `on_move_complete`, `on_homing_complete`, `on_homing_failed`, `on_stall` (TMC2209),
@@ -132,8 +159,11 @@ Im Pin-Modus gilt das Poti; für Module mit 110 mΩ: `I_RMS ≈ 0,71 · Vref`. D
 ## Inbetriebnahme / Testplan
 
 1. **Ohne Motor, Logger auf DEBUG.** Erwartet beim Start:
-   `IOIN=0x20…… (version 0x20, …)` (TMC2209: `0x21`) und
-   `Driver configured (IRUN=…, IHOLD=…, vsense=…)`.
+   `IOIN=0x20…… (version 0x20, …)` (TMC2209: `0x21`),
+   `Driver configured (IRUN=…, IHOLD=…, vsense=…)` und bei STEP/DIR
+   `Wiring check: STEP and DIR reach the driver`. Die Prüfung schaltet beide Leitungen einmal um
+   und liest sie über IOIN zurück (ein Mikroschritt). `tmc22xx.spin_test` dreht den Motor ohne
+   STEP/DIR und trennt so Treiber-/Motorfehler von Fehlern im Schrittsignal.
    Jeder Schreibzugriff wird über IFCNT geprüft; `dump_config` zeigt CRC-Fehler und Timeouts.
    - `Driver not responding on UART`: VM fehlt (die Logik des Chips wird aus VM versorgt), 1-kΩ-Widerstand,
      RX/TX vertauscht, UART-Lötbrücke, falsche Adresse. Die Komponente versucht es bei jedem Poll erneut.

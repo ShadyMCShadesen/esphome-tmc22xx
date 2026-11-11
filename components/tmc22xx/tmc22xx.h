@@ -13,6 +13,9 @@
 #ifdef USE_TMC22XX_UART
 #include "tmc22xx_uart.h"
 #endif
+#ifdef USE_TMC22XX_VACTUAL
+#include "tmc22xx_vactual.h"
+#endif
 #ifdef USE_TMC22XX_SENSOR
 #include "esphome/components/sensor/sensor.h"
 #endif
@@ -78,6 +81,14 @@ class TMC22XX : public Component {
   void set_spreadcycle(bool spreadcycle) { this->spreadcycle_ = spreadcycle; }
   void set_poll_interval(uint32_t ms) { this->poll_interval_ms_ = ms; }
 #endif
+#ifdef USE_TMC22XX_VACTUAL
+  /// Motion through VACTUAL with INDEX feedback instead of STEP/DIR.
+  void set_index_pin(InternalGPIOPin *pin) {
+    this->index_pin_ = pin;
+    this->uart_control_ = true;
+  }
+  void set_creep_speed(float speed) { this->creep_speed_ = speed; }
+#endif
 #ifdef USE_TMC22XX_STALLGUARD
   void set_diag_pin(InternalGPIOPin *pin) { this->diag_pin_ = pin; }
   void set_stop_on_stall(bool stop) { this->stop_on_stall_ = stop; }
@@ -129,10 +140,10 @@ class TMC22XX : public Component {
   void disable();
   void home();
 
-  float get_position() { return static_cast<float>(this->gen_.get_position()) / this->steps_per_unit_; }
-  float get_target() { return static_cast<float>(this->gen_.get_target()) / this->steps_per_unit_; }
-  int32_t get_position_steps() { return this->gen_.get_position(); }
-  bool is_moving() const { return this->moving_ || this->gen_.is_running(); }
+  float get_position() { return static_cast<float>(this->motion_->get_position()) / this->steps_per_unit_; }
+  float get_target() { return static_cast<float>(this->motion_->get_target()) / this->steps_per_unit_; }
+  int32_t get_position_steps() { return this->motion_->get_position(); }
+  bool is_moving() const { return this->moving_ || this->motion_->is_running(); }
   bool is_homed() const { return this->homed_; }
   bool is_homing() const { return this->homing_state_ != HOMING_IDLE; }
   bool is_enabled() const { return this->enabled_; }
@@ -208,6 +219,13 @@ class TMC22XX : public Component {
 #endif
 
   StepGenerator gen_;
+  MotionBackend *motion_{&gen_};
+#ifdef USE_TMC22XX_VACTUAL
+  UartMotion uart_motion_;
+  InternalGPIOPin *index_pin_{nullptr};
+  float creep_speed_{0.0f};
+#endif
+  bool uart_control_{false};
   InternalGPIOPin *step_pin_{nullptr};
   InternalGPIOPin *dir_pin_{nullptr};
   GPIOPin *enable_pin_{nullptr};

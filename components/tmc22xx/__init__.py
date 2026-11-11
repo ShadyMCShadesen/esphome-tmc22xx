@@ -46,6 +46,9 @@ CONF_DRIVER = "driver"
 CONF_MS1_PIN = "ms1_pin"
 CONF_MS2_PIN = "ms2_pin"
 CONF_DIAG_PIN = "diag_pin"
+CONF_INDEX_PIN = "index_pin"
+CONF_CONTROL = "control"
+CONF_CREEP_SPEED = "creep_speed"
 CONF_MICROSTEPS = "microsteps"
 CONF_INTERPOLATION = "interpolation"
 CONF_RUN_CURRENT = "run_current"
@@ -82,6 +85,8 @@ CONF_ON_DRIVER_ERROR = "on_driver_error"
 
 MODE_UART = "uart"
 MODE_PINS = "pins"
+CONTROL_STEP_DIR = "step_dir"
+CONTROL_UART = "uart"
 DRIVER_TMC2208 = "tmc2208"
 DRIVER_TMC2209 = "tmc2209"
 SOURCE_ENDSTOP = "endstop"
@@ -129,6 +134,8 @@ UART_ONLY_KEYS = (
     CONF_STOP_ON_STALL,
     CONF_ON_STALL,
     CONF_ON_DRIVER_ERROR,
+    CONF_INDEX_PIN,
+    CONF_CREEP_SPEED,
 )
 # Options that only exist on the TMC2209 (StallGuard4)
 TMC2209_ONLY_KEYS = (
@@ -244,6 +251,38 @@ def _validate_config(config):
                 "Use one UART bus per TMC2208.",
                 path=[CONF_ADDRESS],
             )
+
+    if config[CONF_CONTROL] == CONTROL_UART:
+        if mode != MODE_UART:
+            raise cv.Invalid(
+                "'control: uart' requires 'mode: uart'", path=[CONF_CONTROL]
+            )
+        if CONF_INDEX_PIN not in config:
+            raise cv.Invalid(
+                "'control: uart' requires 'index_pin': the position is counted from the "
+                "driver's INDEX output",
+                path=[CONF_INDEX_PIN],
+            )
+        for key in (CONF_STEP_PIN, CONF_DIR_PIN):
+            if key in config:
+                raise cv.Invalid(
+                    f"'{key}' is not used with 'control: uart' (the driver generates the steps "
+                    "itself; its STEP input is ignored)",
+                    path=[key],
+                )
+    else:
+        for key in (CONF_STEP_PIN, CONF_DIR_PIN):
+            if key not in config:
+                raise cv.Invalid(
+                    f"'{key}' is required (or use 'control: uart' with 'index_pin' to move "
+                    "the motor without STEP/DIR)",
+                    path=[key],
+                )
+        for key in (CONF_INDEX_PIN, CONF_CREEP_SPEED):
+            if key in config:
+                raise cv.Invalid(
+                    f"'{key}' is only used with 'control: uart'", path=[key]
+                )
 
     if mode == MODE_PINS:
         for key in UART_ONLY_KEYS:
@@ -390,8 +429,14 @@ CONFIG_SCHEMA = cv.All(
                 MODE_UART, MODE_PINS, lower=True
             ),
             # pins
-            cv.Required(CONF_STEP_PIN): pins.internal_gpio_output_pin_schema,
-            cv.Required(CONF_DIR_PIN): pins.internal_gpio_output_pin_schema,
+            # how the motor is moved: STEP/DIR pulses, or velocity commands over UART (VACTUAL)
+            cv.Optional(CONF_CONTROL, default=CONTROL_STEP_DIR): cv.one_of(
+                CONTROL_STEP_DIR, CONTROL_UART, lower=True
+            ),
+            cv.Optional(CONF_STEP_PIN): pins.internal_gpio_output_pin_schema,
+            cv.Optional(CONF_DIR_PIN): pins.internal_gpio_output_pin_schema,
+            cv.Optional(CONF_INDEX_PIN): pins.internal_gpio_input_pin_schema,
+            cv.Optional(CONF_CREEP_SPEED): cv.positive_not_null_float,
             cv.Optional(CONF_ENABLE_PIN): pins.gpio_output_pin_schema,
             cv.Optional(CONF_MS1_PIN): pins.gpio_output_pin_schema,
             cv.Optional(CONF_MS2_PIN): pins.gpio_output_pin_schema,
@@ -551,8 +596,16 @@ async def to_code(config):
     await cg.register_component(var, config)
 
     cg.add(var.set_driver_type(DRIVER_TYPES[config[CONF_DRIVER]]))
-    cg.add(var.set_step_pin(await cg.gpio_pin_expression(config[CONF_STEP_PIN])))
-    cg.add(var.set_dir_pin(await cg.gpio_pin_expression(config[CONF_DIR_PIN])))
+    if config[CONF_CONTROL] == CONTROL_UART:
+        cg.add_define("USE_TMC22XX_VACTUAL")
+        cg.add(
+            var.set_index_pin(await cg.gpio_pin_expression(config[CONF_INDEX_PIN]))
+        )
+        if CONF_CREEP_SPEED in config:
+            cg.add(var.set_creep_speed(config[CONF_CREEP_SPEED]))
+    else:
+        cg.add(var.set_step_pin(await cg.gpio_pin_expression(config[CONF_STEP_PIN])))
+        cg.add(var.set_dir_pin(await cg.gpio_pin_expression(config[CONF_DIR_PIN])))
     if (pin := config.get(CONF_ENABLE_PIN)) is not None:
         cg.add(var.set_enable_pin(await cg.gpio_pin_expression(pin)))
     if (pin := config.get(CONF_MS1_PIN)) is not None:

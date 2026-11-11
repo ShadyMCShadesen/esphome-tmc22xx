@@ -27,10 +27,12 @@ static const uint8_t IHOLD_DELAY = 4;  // current ramp-down speed after TPOWERDO
 int32_t TMC22XX::to_steps_(float units) const { return static_cast<int32_t>(lroundf(units * this->steps_per_unit_)); }
 
 void TMC22XX::setup() {
-  this->step_pin_->setup();
-  this->step_pin_->digital_write(false);
-  this->dir_pin_->setup();
-  this->dir_pin_->digital_write(false);
+  if (!this->uart_control_) {
+    this->step_pin_->setup();
+    this->step_pin_->digital_write(false);
+    this->dir_pin_->setup();
+    this->dir_pin_->digital_write(false);
+  }
   if (this->enable_pin_ != nullptr) {
     this->enable_pin_->setup();
     this->enable_pin_->digital_write(false);  // logical "not enabled"
@@ -49,12 +51,23 @@ void TMC22XX::setup() {
     this->endstop_pin_->setup();
 #endif
 
-  if (!this->gen_.setup(this->step_pin_, this->dir_pin_)) {
-    this->mark_failed(LOG_STR("no hardware timer available"));
-    return;
+#ifdef USE_TMC22XX_VACTUAL
+  if (this->uart_control_) {
+    this->index_pin_->setup();
+    this->uart_motion_.setup(&this->uart_, this->index_pin_);
+    if (this->creep_speed_ > 0.0f)
+      this->uart_motion_.set_creep_speed(this->creep_speed_ * this->steps_per_unit_);
+    this->motion_ = &this->uart_motion_;
   }
-  // With UART the direction is inverted inside the driver (GCONF.shaft), otherwise on the DIR pin.
-  this->gen_.set_invert_direction(this->invert_direction_ && !this->uart_mode_);
+#endif
+  if (!this->uart_control_) {
+    if (!this->gen_.setup(this->step_pin_, this->dir_pin_)) {
+      this->mark_failed(LOG_STR("no hardware timer available"));
+      return;
+    }
+    // With UART the direction is inverted inside the driver (GCONF.shaft), otherwise on the DIR pin.
+    this->gen_.set_invert_direction(this->invert_direction_ && !this->uart_mode_);
+  }
   this->ready_ = true;
   this->update_profile_();
 
@@ -92,6 +105,10 @@ void TMC22XX::dump_config() {
                 this->driver_type_ == DRIVER_TMC2209 ? "TMC2209" : "TMC2208", this->uart_mode_ ? "UART" : "pins",
                 this->microsteps_, YESNO(this->interpolation_ && this->uart_mode_), this->steps_per_unit_,
                 this->max_speed_, this->acceleration_, this->deceleration_, YESNO(this->invert_direction_));
+  ESP_LOGCONFIG(TAG, "  Control: %s", this->uart_control_ ? "UART (VACTUAL + INDEX)" : "STEP/DIR");
+#ifdef USE_TMC22XX_VACTUAL
+  LOG_PIN("  INDEX pin: ", this->index_pin_);
+#endif
   LOG_PIN("  STEP pin: ", this->step_pin_);
   LOG_PIN("  DIR pin: ", this->dir_pin_);
   LOG_PIN("  EN pin: ", this->enable_pin_);
@@ -158,7 +175,7 @@ void TMC22XX::dump_config() {
 void TMC22XX::update_profile_() {
   if (!this->ready_)
     return;
-  this->gen_.set_profile(this->max_speed_ * this->steps_per_unit_, this->acceleration_ * this->steps_per_unit_,
+  this->motion_->set_profile(this->max_speed_ * this->steps_per_unit_, this->acceleration_ * this->steps_per_unit_,
                          this->deceleration_ * this->steps_per_unit_);
 }
 
@@ -240,7 +257,7 @@ void TMC22XX::start_steps_(int32_t target) {
     this->enable();
   this->idle_pending_ = false;
   this->moving_ = true;
-  this->gen_.move_to(target);
+  this->motion_->move_to(target);
 }
 
 void TMC22XX::move_to(float position) {
@@ -295,7 +312,7 @@ void TMC22XX::run(bool forward) {
   ESP_LOGD(TAG, "Run %s", forward ? "forward" : "backward");
   this->idle_pending_ = false;
   this->moving_ = true;
-  this->gen_.run(forward);
+  this->motion_->run(forward);
 }
 
 void TMC22XX::stop() {
@@ -305,7 +322,7 @@ void TMC22XX::stop() {
     return;
   }
 #endif
-  this->gen_.stop();
+  this->motion_->stop();
 }
 
 void TMC22XX::emergency_stop() {
@@ -315,11 +332,11 @@ void TMC22XX::emergency_stop() {
     return;
   }
 #endif
-  this->gen_.emergency_stop();
+  this->motion_->emergency_stop();
 }
 
 void TMC22XX::set_position(float position) {
-  this->gen_.set_position(this->to_steps_(position));
+  this->motion_->set_position(this->to_steps_(position));
   this->publish_position_();
 }
 
@@ -336,8 +353,8 @@ void TMC22XX::enable() {
 }
 
 void TMC22XX::disable() {
-  if (this->gen_.is_running())
-    this->gen_.emergency_stop();
+  if (this->motion_->is_running())
+    this->motion_->emergency_stop();
   this->enabled_ = false;
   this->idle_pending_ = false;
   if (this->enable_pin_ != nullptr) {
@@ -380,9 +397,9 @@ void TMC22XX::on_motion_end_() {
   }
 #endif
 #ifdef USE_TMC22XX_STALLGUARD
-  if (this->stop_on_stall_ && this->gen_.trigger_fired())
+  if (this->stop_on_stall_ && this->motion_->trigger_fired())
     this->stall_event_();
-  this->gen_.disarm_trigger();
+  this->motion_->disarm_trigger();
 #endif
   ESP_LOGD(TAG, "Move complete at %.3f", this->get_position());
   this->move_complete_cb_.call();
@@ -392,7 +409,14 @@ void TMC22XX::loop() {
   if (!this->ready_)
     return;
   const uint32_t now = millis();
-  const bool running = this->gen_.is_running();
+  this->motion_->loop();
+  if (this->motion_->stop_failed() && this->enabled_ && this->enable_pin_ != nullptr) {
+    // The driver keeps turning the motor and cannot be reached: cut the power stage via EN.
+    ESP_LOGE(TAG, "Stop command not acknowledged, disabling the driver through the EN pin");
+    this->enable_pin_->digital_write(false);
+    this->enabled_ = false;
+  }
+  const bool running = this->motion_->is_running();
 
   if (this->moving_ && !running) {
     this->moving_ = false;
@@ -416,7 +440,7 @@ void TMC22XX::loop() {
 #ifdef USE_TMC22XX_STALLGUARD
   // Monitoring only (no automatic stop): DIAG is evaluated while cruising, where StallGuard is valid.
   if (running && !this->stop_on_stall_ && !this->stall_reported_ && !this->is_homing() &&
-      this->diag_pin_ != nullptr && this->gen_.is_cruising() && this->diag_pin_->digital_read()) {
+      this->diag_pin_ != nullptr && this->motion_->is_cruising() && this->diag_pin_->digital_read()) {
     this->stall_event_();
   }
 #endif
@@ -471,6 +495,8 @@ uint32_t TMC22XX::gconf_value_(bool force_stealthchop) const {
   // Internal reference instead of VREF pin (I_scale_analog = 0), PDN_UART used for UART only,
   // microstep resolution from MRES instead of the MS1/MS2 pins.
   uint32_t gconf = GCONF_PDN_DISABLE | GCONF_MSTEP_REG_SELECT | GCONF_MULTISTEP_FILT;
+  if (this->uart_control_)
+    gconf |= GCONF_INDEX_STEP;  // INDEX reports the steps of the internal pulse generator
   if (this->spreadcycle_ && !force_stealthchop)
     gconf |= GCONF_EN_SPREADCYCLE;
   if (this->invert_direction_)
@@ -524,7 +550,11 @@ bool TMC22XX::configure_driver_() {
   uint32_t tpowerdown = (this->standstill_delay_ms_ * 1000UL + 10922UL) / 21845UL;  // units of 2^18 / f_CLK
   tpowerdown = std::clamp<uint32_t>(tpowerdown, 2, 255);  // >= 2 for StealthChop tuning
 
-  bool ok = this->write_(REG_GCONF, this->gconf_value_(false));
+  bool ok = true;
+  // A driver that kept its supply across an ESP restart may still be turning the motor.
+  if (this->uart_control_ && !this->motion_->is_running())
+    ok = this->write_(REG_VACTUAL, 0);
+  ok = ok && this->write_(REG_GCONF, this->gconf_value_(false));
   ok = ok && this->write_(REG_CHOPCONF, this->chopconf_value_());
   ok = ok && this->write_(REG_IHOLD_IRUN, this->ihold_irun_value_());
   ok = ok && this->write_(REG_TPOWERDOWN, tpowerdown);
@@ -549,7 +579,11 @@ bool TMC22XX::configure_driver_() {
 void TMC22XX::check_wiring_() {
   // IOIN mirrors the levels the driver sees on its pins, so the STEP/DIR/EN wiring can be verified
   // without moving the motor (the single STEP edge used here is one microstep).
-  if (this->gen_.is_running())
+  if (this->uart_control_) {
+    this->wiring_checked_ = true;  // no STEP/DIR lines in this mode
+    return;
+  }
+  if (this->motion_->is_running())
     return;
   uint32_t high = 0, low = 0;
   this->dir_pin_->digital_write(true);
@@ -772,7 +806,7 @@ void TMC22XX::stall_prepare_() {
     this->stall_binary_sensor_->publish_state(false);
 #endif
   if (this->stop_on_stall_ && this->diag_pin_ != nullptr)
-    this->gen_.arm_trigger(this->diag_pin_, 0, true);
+    this->motion_->arm_trigger(this->diag_pin_, 0, true);
 }
 
 void TMC22XX::stall_event_() {
@@ -805,8 +839,8 @@ void TMC22XX::home() {
   }
   if (this->is_homing())
     return;
-  this->gen_.emergency_stop();
-  this->gen_.disarm_trigger();
+  this->motion_->emergency_stop();
+  this->motion_->disarm_trigger();
   this->homed_ = false;
   this->homing_started_ms_ = millis();
 
@@ -855,28 +889,28 @@ void TMC22XX::homing_start_phase_(HomingState state) {
   }
 #endif
   const int32_t sign = this->homing_positive_ ? 1 : -1;
-  const int32_t position = this->gen_.get_position();
+  const int32_t position = this->motion_->get_position();
   const int32_t backoff = abs(this->to_steps_(this->homing_backoff_));
   float speed = this->homing_speed_;
   int32_t target = position;
 
   switch (state) {
     case HOMING_SEARCH:
-      this->gen_.arm_trigger(trigger_pin, debounce_us, cruise_only);
+      this->motion_->arm_trigger(trigger_pin, debounce_us, cruise_only);
       target = position + sign * abs(this->to_steps_(this->homing_max_travel_));
       break;
     case HOMING_SLOW:
-      this->gen_.arm_trigger(trigger_pin, debounce_us, cruise_only);
+      this->motion_->arm_trigger(trigger_pin, debounce_us, cruise_only);
       speed = this->homing_slow_speed_;
       target = position + sign * 2 * backoff;
       break;
     case HOMING_BACKOFF:
     case HOMING_RETRACT:
-      this->gen_.disarm_trigger();
+      this->motion_->disarm_trigger();
       target = position - sign * backoff;
       break;
     case HOMING_PARK:
-      this->gen_.disarm_trigger();
+      this->motion_->disarm_trigger();
       speed = this->max_speed_;
       target = this->to_steps_(this->homing_park_position_);
       break;
@@ -884,13 +918,13 @@ void TMC22XX::homing_start_phase_(HomingState state) {
       return;
   }
   ESP_LOGD(TAG, "Homing phase %u: %" PRId32 " -> %" PRId32 " steps at %.2f units/s", state, position, target, speed);
-  this->gen_.set_profile(speed * this->steps_per_unit_, this->acceleration_ * this->steps_per_unit_,
+  this->motion_->set_profile(speed * this->steps_per_unit_, this->acceleration_ * this->steps_per_unit_,
                          this->deceleration_ * this->steps_per_unit_);
   this->start_steps_(target);
 }
 
 void TMC22XX::homing_on_motion_end_() {
-  const bool fired = this->gen_.trigger_fired();
+  const bool fired = this->motion_->trigger_fired();
   const bool endstop = this->homing_source_ == HOMING_SOURCE_ENDSTOP;
   switch (this->homing_state_) {
     case HOMING_SEARCH:
@@ -935,8 +969,10 @@ void TMC22XX::homing_on_motion_end_() {
 
 void TMC22XX::homing_after_reference_() {
   // The trigger point becomes the reference position.
-  this->gen_.disarm_trigger();
-  this->gen_.set_position(this->to_steps_(this->homing_position_));
+  // A backend that stops with some delay reports how far it ran past the trigger point.
+  const int32_t overshoot = this->motion_->trigger_overshoot();
+  this->motion_->disarm_trigger();
+  this->motion_->set_position(this->to_steps_(this->homing_position_) + overshoot);
   if (this->homing_backoff_ > 0.0f) {
     this->homing_start_phase_(HOMING_RETRACT);
   } else if (this->has_park_position_) {
@@ -947,7 +983,7 @@ void TMC22XX::homing_after_reference_() {
 }
 
 void TMC22XX::homing_restore_() {
-  this->gen_.disarm_trigger();
+  this->motion_->disarm_trigger();
   this->homing_state_ = HOMING_IDLE;
   this->update_profile_();
 #if defined(USE_TMC22XX_STALLGUARD) && defined(USE_TMC22XX_UART)
@@ -972,7 +1008,7 @@ void TMC22XX::homing_finish_() {
 }
 
 void TMC22XX::homing_fail_(const LogString *reason) {
-  this->gen_.emergency_stop();
+  this->motion_->emergency_stop();
   this->moving_ = false;
   this->last_stop_ms_ = millis();
   this->idle_pending_ = true;
