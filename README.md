@@ -92,6 +92,10 @@ Ohne STEP/DIR: Die Komponente gibt dem Treiber über das Register VACTUAL eine G
 und zählt jeden erzeugten Mikroschritt am INDEX-Pin (`GCONF.index_step`). Nötig sind `mode: uart`
 und `index_pin`; `step_pin`/`dir_pin` entfallen. Beispiel: `examples/tmc2209_uart_control.yaml`.
 
+- **Der STEP-Eingang des Treibers muss auf festem Pegel liegen.** Im Stillstand (VACTUAL = 0) wertet
+  der Treiber STEP weiterhin aus; ein offener Eingang fängt Störungen ein, der Motor kreischt und
+  wandert. STEP und DIR am Modul entweder fest auf GND legen oder, falls sie am ESP hängen,
+  `step_pin`/`dir_pin` zusätzlich angeben: Die Komponente hält sie dann dauerhaft auf low.
 - Die Rampe entsteht aus Geschwindigkeitsvorgaben alle 5 ms. Die Bremskurve richtet sich nach der
   gezählten Position, die Toleranz des Treibertakts beeinflusst das Ziel also nicht.
 - Das Ziel wird mit `creep_speed` angefahren. Läuft der Motor wegen der Befehlslaufzeit darüber

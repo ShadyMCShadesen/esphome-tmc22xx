@@ -27,9 +27,13 @@ static const uint8_t IHOLD_DELAY = 4;  // current ramp-down speed after TPOWERDO
 int32_t TMC22XX::to_steps_(float units) const { return static_cast<int32_t>(lroundf(units * this->steps_per_unit_)); }
 
 void TMC22XX::setup() {
-  if (!this->uart_control_) {
+  // In UART control these pins are optional and only held low: a floating STEP input would make
+  // the driver step on noise whenever it stands still.
+  if (this->step_pin_ != nullptr) {
     this->step_pin_->setup();
     this->step_pin_->digital_write(false);
+  }
+  if (this->dir_pin_ != nullptr) {
     this->dir_pin_->setup();
     this->dir_pin_->digital_write(false);
   }

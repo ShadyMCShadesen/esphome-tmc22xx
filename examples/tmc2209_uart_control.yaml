@@ -35,7 +35,11 @@ tmc22xx:
   - id: motor
     driver: tmc2209
     mode: uart
-    control: uart               # no step_pin / dir_pin
+    control: uart
+    # STEP/DIR of the driver must not float: tie them to GND, or if they are wired to the ESP list
+    # them here so they are held low.
+    #step_pin: GPIO25
+    #dir_pin: GPIO26
     uart_id: tmc_uart
     index_pin: GPIO35           # INDEX output of the driver
     diag_pin: GPIO34

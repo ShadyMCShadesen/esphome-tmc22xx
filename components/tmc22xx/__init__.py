@@ -263,13 +263,6 @@ def _validate_config(config):
                 "driver's INDEX output",
                 path=[CONF_INDEX_PIN],
             )
-        for key in (CONF_STEP_PIN, CONF_DIR_PIN):
-            if key in config:
-                raise cv.Invalid(
-                    f"'{key}' is not used with 'control: uart' (the driver generates the steps "
-                    "itself; its STEP input is ignored)",
-                    path=[key],
-                )
     else:
         for key in (CONF_STEP_PIN, CONF_DIR_PIN):
             if key not in config:
@@ -603,9 +596,12 @@ async def to_code(config):
         )
         if CONF_CREEP_SPEED in config:
             cg.add(var.set_creep_speed(config[CONF_CREEP_SPEED]))
-    else:
-        cg.add(var.set_step_pin(await cg.gpio_pin_expression(config[CONF_STEP_PIN])))
-        cg.add(var.set_dir_pin(await cg.gpio_pin_expression(config[CONF_DIR_PIN])))
+    # With 'control: uart' STEP/DIR are optional: if wired they are held low, because the driver
+    # still listens to its STEP input while it stands still (VACTUAL = 0).
+    if (pin := config.get(CONF_STEP_PIN)) is not None:
+        cg.add(var.set_step_pin(await cg.gpio_pin_expression(pin)))
+    if (pin := config.get(CONF_DIR_PIN)) is not None:
+        cg.add(var.set_dir_pin(await cg.gpio_pin_expression(pin)))
     if (pin := config.get(CONF_ENABLE_PIN)) is not None:
         cg.add(var.set_enable_pin(await cg.gpio_pin_expression(pin)))
     if (pin := config.get(CONF_MS1_PIN)) is not None:
