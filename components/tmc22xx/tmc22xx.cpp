@@ -702,15 +702,22 @@ void TMC22XX::poll_driver_() {
 
 #ifdef USE_TMC22XX_SENSOR
   if (this->actual_current_sensor_ != nullptr) {
+    // Sensors are only published when the value changes, not with every poll.
     const uint8_t cs = (drv >> DRV_CS_ACTUAL_SHIFT) & 0x1F;
-    const float vfs = this->vsense_ ? 0.180f : 0.325f;
-    this->actual_current_sensor_->publish_state((cs + 1) / 32.0f * vfs / (this->rsense_ + 0.02f) / 1.41421f * 1000.0f);
+    if (cs != this->last_cs_) {
+      this->last_cs_ = cs;
+      const float vfs = this->vsense_ ? 0.180f : 0.325f;
+      this->actual_current_sensor_->publish_state((cs + 1) / 32.0f * vfs / (this->rsense_ + 0.02f) / 1.41421f *
+                                                  1000.0f);
+    }
   }
 #ifdef USE_TMC22XX_STALLGUARD
   if (this->stallguard_result_sensor_ != nullptr && this->driver_type_ == DRIVER_TMC2209) {
     uint32_t sg = 0;
-    if (this->uart_.read(REG_SG_RESULT, &sg))
-      this->stallguard_result_sensor_->publish_state(sg & 0x3FF);
+    if (this->uart_.read(REG_SG_RESULT, &sg) && (sg & 0x3FF) != this->last_sg_) {
+      this->last_sg_ = sg & 0x3FF;
+      this->stallguard_result_sensor_->publish_state(this->last_sg_);
+    }
   }
 #endif
 #endif
